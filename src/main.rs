@@ -47,47 +47,72 @@ fn run(args: Args) -> inspire_bibgen::Result<()> {
     let input = args.input.trim();
     let path = Path::new(input);
 
-    // Check if input is a file
-    let bibtex = if path.exists() && path.is_file() {
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        match ext.to_lowercase().as_str() {
-            "tex" => {
-                let bibgen = BibliographyGenerator::new();
-                eprintln!("Processing TeX file: {}...", input);
-                bibgen.generate_from_file(path)?
-            }
-            "typ" | "typst" => {
-                let bibgen = BibliographyGenerator::new();
-                eprintln!("Processing Typst file: {}...", input);
-                bibgen.generate_from_file(path)?
-            }
-            _ => {
-                return Err(inspire_bibgen::Error::Parse(format!(
-                    "Unsupported file type: .{}",
-                    ext
-                )));
-            }
+    // Treat the input as a document only when it has a recognised extension;
+    // otherwise it is one or more identifiers. This avoids an identifier being
+    // silently overridden by a same-named file on disk.
+    let doc_ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_lowercase)
+        .filter(|e| matches!(e.as_str(), "tex" | "typ" | "typst"));
+
+    let bibtex = if let Some(ext) = doc_ext {
+        if !path.is_file() {
+            return Err(inspire_bibgen::Error::Parse(format!(
+                "File not found: {}",
+                input
+            )));
         }
+        let bibgen = BibliographyGenerator::new();
+        eprintln!("Processing {} file: {}...", ext, input);
+        bibgen.generate_from_file(path)?
     } else {
         // Split by comma for multiple identifiers
-        let keys: Vec<&str> = input.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        let keys: Vec<&str> = input
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if keys.is_empty() {
+            return Err(inspire_bibgen::Error::InvalidIdentifier(
+                "no identifier provided".to_string(),
+            ));
+        }
+
         let client = InspireClient::new();
         let mut results = Vec::new();
+        // Keys that could not be retrieved, paired with the reason.
+        let mut missing_keys: Vec<(String, String)> = Vec::new();
 
         for key in &keys {
-            let id = Identifier::parse(key)?;
+            // A malformed identifier or a failed fetch only skips that item —
+            // it never aborts the whole batch.
+            let id = match Identifier::parse(key) {
+                Ok(id) => id,
+                Err(e) => {
+                    missing_keys.push((key.to_string(), e.to_string()));
+                    continue;
+                }
+            };
             eprintln!("Fetching BibTeX for {:?}...", id);
             match client.fetch_bibtex(&id) {
                 Ok(bib) => results.push(bib),
-                Err(e) => eprintln!("Warning: {} - skipping", e),
+                Err(e) => missing_keys.push((key.to_string(), e.to_string())),
             }
         }
 
-        if results.is_empty() {
-            return Err(inspire_bibgen::Error::Api("No BibTeX entries retrieved".to_string()));
+        // Always tell the user explicitly which keys were left out.
+        if let Some(summary) = format_missing_summary(&missing_keys) {
+            eprintln!("{}", summary);
         }
 
-        results.join("\n")
+        if results.is_empty() {
+            return Err(inspire_bibgen::Error::Api(
+                "No BibTeX entries retrieved".to_string(),
+            ));
+        }
+
+        results.join("\n\n")
     };
 
     // Output: print to stdout or save to file
@@ -102,4 +127,60 @@ fn run(args: Args) -> inspire_bibgen::Result<()> {
     }
 
     Ok(())
+}
+
+/// Build an explicit, user-facing summary of the keys that could not be
+/// retrieved from INSPIRE. Returns `None` when every key succeeded.
+fn format_missing_summary(missing: &[(String, String)]) -> Option<String> {
+    if missing.is_empty() {
+        return None;
+    }
+    let mut s = format!(
+        "\n⚠  {} key(s) could not be retrieved from INSPIRE and were left out of the output:",
+        missing.len()
+    );
+    for (key, reason) in missing {
+        // Keep the summary scannable: only the first line of the reason.
+        let reason = reason.lines().next().unwrap_or("unknown error");
+        s.push_str(&format!("\n    - {key}  ({reason})"));
+    }
+    Some(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_summary_when_nothing_failed() {
+        assert!(format_missing_summary(&[]).is_none());
+    }
+
+    #[test]
+    fn summary_lists_every_failed_key_with_its_reason() {
+        let missing = vec![
+            (
+                "9999.99999".to_string(),
+                "Paper not found: ArXiv(\"9999.99999\")".to_string(),
+            ),
+            (
+                "badkey".to_string(),
+                "Invalid identifier format: bad".to_string(),
+            ),
+        ];
+        let summary = format_missing_summary(&missing).expect("summary expected");
+        assert!(summary.contains("2 key"), "should state the count: {summary}");
+        assert!(summary.contains("9999.99999"));
+        assert!(summary.contains("Paper not found"));
+        assert!(summary.contains("badkey"));
+        assert!(summary.contains("Invalid identifier format"));
+    }
+
+    #[test]
+    fn summary_keeps_only_the_first_line_of_a_multiline_reason() {
+        let missing = vec![("k".to_string(), "short reason\nverbose detail".to_string())];
+        let summary = format_missing_summary(&missing).expect("summary expected");
+        assert!(summary.contains("short reason"));
+        assert!(!summary.contains("verbose detail"));
+    }
 }

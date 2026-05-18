@@ -1,88 +1,132 @@
 use crate::Result;
-use regex::Regex;
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
-/// Extract BibTeX entry keys from content
-fn extract_bibtex_keys(content: &str) -> HashSet<String> {
-    let key_regex = Regex::new(r"@\w+\{([^,]+),").unwrap();
-    key_regex
-        .captures_iter(content)
-        .filter_map(|cap| cap.get(1).map(|m| m.as_str().trim().to_string()))
-        .collect()
-}
+/// Split BibTeX content into individual entries by brace counting.
+///
+/// Unlike a naive regex this correctly handles multi-line entries, compact
+/// entries whose closing `}` shares a line with the last field, entries
+/// without a trailing newline, and nested braces inside field values.
+pub fn split_bibtex_entries(content: &str) -> Vec<String> {
+    let bytes = content.as_bytes();
+    let mut entries = Vec::new();
+    let mut i = 0;
 
-/// Save BibTeX content to a file
-pub fn save_bibtex(path: &Path, content: &str, append: bool) -> Result<()> {
-    if append && path.exists() {
-        // Read existing content to check for duplicates
-        let existing = fs::read_to_string(path)?;
-        let existing_keys = extract_bibtex_keys(&existing);
-        let new_keys = extract_bibtex_keys(content);
+    while i < bytes.len() {
+        if bytes[i] != b'@' {
+            i += 1;
+            continue;
+        }
+        let start = i;
 
-        // Filter out duplicate entries
-        let mut filtered_content = String::new();
-        let entry_regex = Regex::new(r"(@\w+\{[^,]+,[\s\S]*?\n\})").unwrap();
+        // Find this entry's opening brace (stop early if another '@' appears).
+        let mut j = i + 1;
+        while j < bytes.len() && bytes[j] != b'{' && bytes[j] != b'@' {
+            j += 1;
+        }
+        if j >= bytes.len() || bytes[j] != b'{' {
+            i += 1;
+            continue;
+        }
 
-        for cap in entry_regex.captures_iter(content) {
-            if let Some(entry) = cap.get(1) {
-                let entry_str = entry.as_str();
-                // Extract the key from this entry
-                if let Some(key_cap) = Regex::new(r"@\w+\{([^,]+),")
-                    .unwrap()
-                    .captures(entry_str)
-                {
-                    if let Some(key) = key_cap.get(1) {
-                        let key_str = key.as_str().trim();
-                        if !existing_keys.contains(key_str) {
-                            if !filtered_content.is_empty() {
-                                filtered_content.push_str("\n\n");
-                            }
-                            filtered_content.push_str(entry_str);
-                        } else {
-                            eprintln!("Skipping duplicate entry: {}", key_str);
-                        }
+        // Walk braces until balanced.
+        let mut depth = 0i32;
+        let mut k = j;
+        while k < bytes.len() {
+            match bytes[k] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        k += 1;
+                        break;
                     }
                 }
+                _ => {}
+            }
+            k += 1;
+        }
+
+        // ASCII '@', '{', '}' never appear inside a UTF-8 continuation byte,
+        // so `start`/`k` are always valid char boundaries.
+        let entry = content[start..k].trim();
+        if !entry.is_empty() {
+            entries.push(entry.to_string());
+        }
+
+        if depth != 0 {
+            break; // unbalanced input — stop rather than loop forever
+        }
+        i = k;
+    }
+
+    entries
+}
+
+/// Extract the citation key of a single BibTeX entry: the text between the
+/// first `{` and the first following `,` or `}`.
+pub fn entry_key(entry: &str) -> Option<&str> {
+    let open = entry.find('{')?;
+    let rest = &entry[open + 1..];
+    let end = rest.find([',', '}']).unwrap_or(rest.len());
+    let key = rest[..end].trim();
+    if key.is_empty() {
+        None
+    } else {
+        Some(key)
+    }
+}
+
+/// Save BibTeX content to a file.
+///
+/// In append mode, entries whose key already exists in the file are skipped;
+/// genuinely new entries are always appended (never dropped). In overwrite /
+/// new-file mode the content is written verbatim.
+pub fn save_bibtex(path: &Path, content: &str, append: bool) -> Result<()> {
+    // Make sure the destination directory exists.
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+
+    if append && path.exists() {
+        let existing = fs::read_to_string(path)?;
+        let existing_keys: HashSet<String> = split_bibtex_entries(&existing)
+            .iter()
+            .filter_map(|e| entry_key(e).map(str::to_string))
+            .collect();
+
+        // Keep every incoming entry that is not already present.
+        let mut to_append: Vec<String> = Vec::new();
+        for entry in split_bibtex_entries(content) {
+            match entry_key(&entry) {
+                Some(key) if existing_keys.contains(key) => {
+                    eprintln!("Skipping duplicate entry: {}", key);
+                }
+                _ => to_append.push(entry),
             }
         }
 
-        // Check if content has entries that don't match the regex
-        // (fallback for simple single-entry case)
-        if filtered_content.is_empty() && !content.trim().is_empty() {
-            let content_keys = extract_bibtex_keys(content);
-            let has_duplicates = content_keys.iter().any(|k| existing_keys.contains(k));
-            if !has_duplicates {
-                filtered_content = content.trim().to_string();
-            }
-        }
-
-        if filtered_content.is_empty() {
-            println!("No new entries to add (all duplicates)");
+        if to_append.is_empty() {
+            eprintln!("No new entries to add (all duplicates)");
             return Ok(());
         }
 
-        // Append to existing file
         let mut file = OpenOptions::new().append(true).open(path)?;
-        writeln!(file)?; // Add newline separator
-        writeln!(file)?;
-        write!(file, "{}", filtered_content)?;
-
-        let new_count = new_keys.difference(&existing_keys).count();
-        println!(
+        write!(file, "\n\n{}\n", to_append.join("\n\n"))?;
+        eprintln!(
             "Appended {} new entries to {}",
-            new_count,
+            to_append.len(),
             path.display()
         );
     } else {
-        // Overwrite or create new file
         fs::write(path, content)?;
-        let count = extract_bibtex_keys(content).len();
-        println!(
+        eprintln!(
             "Saved {} entries to {}",
-            count,
+            split_bibtex_entries(content).len(),
             path.display()
         );
     }
@@ -97,22 +141,67 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn test_extract_bibtex_keys() {
-        let content = r#"
-@article{Einstein1905,
-    author = {Einstein, Albert},
-    title = {On the Electrodynamics of Moving Bodies},
-}
+    fn test_split_compact_entry_without_trailing_newline() {
+        let content = "@article{Foo, year = {2020}}";
+        let entries = split_bibtex_entries(content);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entry_key(&entries[0]), Some("Foo"));
+    }
 
-@book{Feynman1965,
-    author = {Feynman, Richard},
-    title = {The Feynman Lectures},
-}
-"#;
-        let keys = extract_bibtex_keys(content);
-        assert!(keys.contains("Einstein1905"));
-        assert!(keys.contains("Feynman1965"));
-        assert_eq!(keys.len(), 2);
+    #[test]
+    fn test_split_multiple_entries() {
+        let content = "@article{A,\n  title = {x}\n}\n@book{B,\n  title = {y}\n}";
+        let entries = split_bibtex_entries(content);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entry_key(&entries[0]), Some("A"));
+        assert_eq!(entry_key(&entries[1]), Some("B"));
+    }
+
+    #[test]
+    fn test_split_entry_with_nested_braces() {
+        let content = "@article{Nested,\n  title = {A {deeply} nested title}\n}";
+        let entries = split_bibtex_entries(content);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entry_key(&entries[0]), Some("Nested"));
+    }
+
+    #[test]
+    fn test_entry_key_handles_whitespace_and_no_fields() {
+        assert_eq!(entry_key("@misc{ Key2024 ,\n}"), Some("Key2024"));
+        assert_eq!(entry_key("@misc{OnlyKey}"), Some("OnlyKey"));
+        assert_eq!(entry_key("not an entry"), None);
+    }
+
+    #[test]
+    fn test_append_skips_duplicates_but_keeps_new_entries() {
+        // Regression: compact entries (no `\n}`) used to be dropped entirely
+        // whenever the payload also contained a duplicate.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("refs.bib");
+        fs::write(&path, "@article{Old, year = {1999}}").unwrap();
+
+        let content = "@article{Old, year = {1999}}\n@article{New, year = {2024}}";
+        save_bibtex(&path, content, true).unwrap();
+
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(saved.contains("@article{New"), "new entry must be appended");
+        assert_eq!(
+            saved.matches("@article{Old").count(),
+            1,
+            "duplicate entry must not be appended again"
+        );
+    }
+
+    #[test]
+    fn test_append_all_duplicates_writes_nothing() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("refs.bib");
+        fs::write(&path, "@article{Dup,\n  year = {2000}\n}").unwrap();
+        let before = fs::read_to_string(&path).unwrap();
+
+        save_bibtex(&path, "@article{Dup,\n  year = {2000}\n}", true).unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
     }
 
     #[test]
@@ -125,5 +214,13 @@ mod tests {
 
         let saved = fs::read_to_string(&path).unwrap();
         assert!(saved.contains("Test2024"));
+    }
+
+    #[test]
+    fn test_save_creates_missing_parent_directory() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("nested/sub/refs.bib");
+        save_bibtex(&path, "@article{X,\n}", false).unwrap();
+        assert!(path.exists());
     }
 }

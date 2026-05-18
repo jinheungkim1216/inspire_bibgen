@@ -1,21 +1,48 @@
 use super::CitationParser;
 use regex::Regex;
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
-pub struct TexParser {
-    // Matches various citation commands: \cite, \citep, \citet, \citeyear, etc.
-    // Handles optional arguments like \cite[note]{key}
-    citation_regex: Regex,
+// Matches any `\...cite...` command — \cite, \citep, \citet, \autocite,
+// \parencite, \textcite, \nocite, \citeauthor, \citealp, … — with an optional
+// `*` and any number of optional `[...]` arguments.
+static CITATION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\\[A-Za-z]*cite[A-Za-z]*\*?(?:\[[^\]]*\])*\{([^}]+)\}").unwrap()
+});
+
+/// Strip TeX line comments: everything from an unescaped `%` to end of line.
+/// An escaped `\%` (odd number of preceding backslashes) is kept literally.
+fn strip_tex_comments(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    for line in content.split_inclusive('\n') {
+        let mut backslashes = 0usize;
+        let mut cut = None;
+        for (idx, ch) in line.char_indices() {
+            match ch {
+                '%' if backslashes.is_multiple_of(2) => {
+                    cut = Some(idx);
+                    break;
+                }
+                '\\' => backslashes += 1,
+                _ => backslashes = 0,
+            }
+        }
+        match cut {
+            Some(idx) => {
+                out.push_str(&line[..idx]);
+                out.push('\n');
+            }
+            None => out.push_str(line),
+        }
+    }
+    out
 }
+
+pub struct TexParser;
 
 impl TexParser {
     pub fn new() -> Self {
-        // Match citation commands with various prefixes and optional arguments
-        // Examples: \cite{key}, \citep{key}, \citet{key}, \cite[p.~5]{key}, \citep*{key}
-        let citation_regex =
-            Regex::new(r"\\cite[tp]?\*?(?:\[[^\]]*\])*(?:\[[^\]]*\])?\{([^}]+)\}").unwrap();
-
-        Self { citation_regex }
+        Self
     }
 }
 
@@ -27,14 +54,16 @@ impl Default for TexParser {
 
 impl CitationParser for TexParser {
     fn extract_citations(&self, content: &str) -> Vec<String> {
+        let stripped = strip_tex_comments(content);
         let mut citations = HashSet::new();
 
-        for cap in self.citation_regex.captures_iter(content) {
+        for cap in CITATION_REGEX.captures_iter(&stripped) {
             if let Some(keys) = cap.get(1) {
                 // Split by comma for multiple keys: \cite{key1,key2,key3}
                 for key in keys.as_str().split(',') {
                     let key = key.trim();
-                    if !key.is_empty() {
+                    // `*` is the `\nocite{*}` wildcard, not a citation key.
+                    if !key.is_empty() && key != "*" {
                         citations.insert(key.to_string());
                     }
                 }
@@ -118,5 +147,37 @@ mod tests {
         assert!(tex.contains(r"\cite{Key1}"));
         assert!(tex.contains(r"\cite{Key2}"));
         assert!(tex.contains(r"\documentclass"));
+    }
+
+    #[test]
+    fn test_ignores_commented_citations() {
+        let parser = TexParser::new();
+        let content = "% \\cite{Commented}\n\\cite{Real}";
+        let citations = parser.extract_citations(content);
+        assert_eq!(citations, vec!["Real"]);
+    }
+
+    #[test]
+    fn test_escaped_percent_is_not_a_comment() {
+        let parser = TexParser::new();
+        let content = r"98\% coverage \cite{Real}";
+        let citations = parser.extract_citations(content);
+        assert_eq!(citations, vec!["Real"]);
+    }
+
+    #[test]
+    fn test_biblatex_and_natbib_commands() {
+        let parser = TexParser::new();
+        let content = r"\autocite{A} \parencite{B} \textcite{C} \citeauthor{D} \citealp{E}";
+        let citations = parser.extract_citations(content);
+        assert_eq!(citations, vec!["A", "B", "C", "D", "E"]);
+    }
+
+    #[test]
+    fn test_nocite_star_is_ignored() {
+        let parser = TexParser::new();
+        let content = r"\nocite{*} \cite{Real}";
+        let citations = parser.extract_citations(content);
+        assert_eq!(citations, vec!["Real"]);
     }
 }

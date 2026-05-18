@@ -2,6 +2,14 @@
 name = "inspire_bibgen"
 version = "0.1.0"
 edition = "2021"
+description = "Fetch BibTeX entries from the INSPIRE HEP database — arXiv/DOI/INSPIRE-ID/texkey lookup and TeX/Typst citation extraction"
+authors = ["Jinheung Kim <jinheung.kim1216@gmail.com>"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/jinheungkim1216/inspire_bibgen"
+keywords = ["bibtex", "inspirehep", "physics", "citations", "cli"]
+categories = ["command-line-utilities", "science"]
+publish = ["jhkim-cargo"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -10,6 +18,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 regex = "1"
+percent-encoding = "2"
 
 [dev-dependencies]
 tempfile = "3"

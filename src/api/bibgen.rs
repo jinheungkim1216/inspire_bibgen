@@ -34,7 +34,7 @@ pub struct BibliographyGenerator {
 impl BibliographyGenerator {
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: crate::api::build_client(),
         }
     }
 
@@ -100,7 +100,16 @@ impl BibliographyGenerator {
 
         match response.status() {
             StatusCode::OK => {
-                let json: BibGenResponse = response.json()?;
+                // Read the body as text first so a malformed/unexpected
+                // response yields a useful error instead of an opaque
+                // deserialization failure.
+                let body = response.text()?;
+                let json: BibGenResponse = serde_json::from_str(&body).map_err(|e| {
+                    let snippet: String = body.chars().take(300).collect();
+                    Error::Api(format!(
+                        "Unexpected response from bibliography generator ({e}): {snippet}"
+                    ))
+                })?;
 
                 // Report errors if any (but continue)
                 for err in &json.data.errors {

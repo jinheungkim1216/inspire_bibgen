@@ -10,7 +10,7 @@ pub struct InspireClient {
 impl InspireClient {
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: crate::api::build_client(),
         }
     }
 
@@ -23,6 +23,11 @@ impl InspireClient {
         match response.status() {
             StatusCode::OK => {
                 let bibtex = response.text()?;
+                // A texkey search with no matches returns HTTP 200 with an
+                // empty body — treat that as "not found" rather than success.
+                if bibtex.trim().is_empty() {
+                    return Err(Error::NotFound(format!("{:?}", identifier)));
+                }
                 Ok(bibtex)
             }
             StatusCode::NOT_FOUND => Err(Error::NotFound(format!("{:?}", identifier))),

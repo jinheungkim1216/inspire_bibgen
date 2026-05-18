@@ -1,25 +1,26 @@
 use super::CitationParser;
 use regex::Regex;
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
-pub struct TypstParser {
-    // Matches #cite(<key>) with optional arguments
-    cite_fn_regex: Regex,
-    // Matches @key shorthand syntax
-    at_regex: Regex,
-}
+// Matches `#cite(<key>)` with optional trailing arguments.
+static CITE_FN_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"#cite\(<([^>]+)>(?:,[^)]*)?\.?\)").unwrap());
+
+// Matches `@key` shorthand. The key may contain dots *between* segments
+// (e.g. arXiv IDs like `1706.03762`) but a trailing `.` — a sentence period —
+// is excluded because every `.` must be followed by an alphanumeric character.
+// The leading boundary avoids matching `@` preceded by alphanumerics (emails).
+static AT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|[^a-zA-Z0-9])@([a-zA-Z0-9][a-zA-Z0-9:_\-]*(?:\.[a-zA-Z0-9][a-zA-Z0-9:_\-]*)*)")
+        .unwrap()
+});
+
+pub struct TypstParser;
 
 impl TypstParser {
     pub fn new() -> Self {
-        let cite_fn_regex = Regex::new(r"#cite\(<([^>]+)>(?:,[^)]*)?\.?\)").unwrap();
-        // @key: starts with @, followed by alphanumeric, colons, dots, hyphens, underscores
-        // Must not be preceded by alphanumeric (to avoid matching emails etc.)
-        let at_regex = Regex::new(r"(?:^|[^a-zA-Z0-9])@([a-zA-Z0-9][a-zA-Z0-9:_\-]*)").unwrap();
-
-        Self {
-            cite_fn_regex,
-            at_regex,
-        }
+        Self
     }
 }
 
@@ -34,7 +35,7 @@ impl CitationParser for TypstParser {
         let mut citations = HashSet::new();
 
         // Match #cite(<key>)
-        for cap in self.cite_fn_regex.captures_iter(content) {
+        for cap in CITE_FN_REGEX.captures_iter(content) {
             if let Some(key) = cap.get(1) {
                 let key = key.as_str().trim();
                 if !key.is_empty() {
@@ -44,7 +45,7 @@ impl CitationParser for TypstParser {
         }
 
         // Match @key
-        for cap in self.at_regex.captures_iter(content) {
+        for cap in AT_REGEX.captures_iter(content) {
             if let Some(key) = cap.get(1) {
                 let key = key.as_str().trim();
                 if !key.is_empty() {
@@ -158,5 +159,45 @@ mod tests {
         let content = "#cite(<Same>) and @Same";
         let citations = parser.extract_citations(content);
         assert_eq!(citations, vec!["Same"]);
+    }
+
+    #[test]
+    fn test_at_syntax_arxiv_style_key() {
+        // arXiv IDs used as Typst labels contain a dot — `@1706.03762`
+        // must not be truncated to `1706`.
+        let parser = TypstParser::new();
+        let content = "as introduced in @1706.03762 the model...";
+        let citations = parser.extract_citations(content);
+        assert_eq!(citations, vec!["1706.03762"]);
+    }
+
+    #[test]
+    fn test_at_syntax_trailing_period_excluded() {
+        // A sentence-ending period after `@key` is not part of the key.
+        let parser = TypstParser::new();
+        let content = "shown by @Weinberg:1967tq.";
+        let citations = parser.extract_citations(content);
+        assert_eq!(citations, vec!["Weinberg:1967tq"]);
+    }
+
+    #[test]
+    fn test_at_reference_directly_after_a_label() {
+        // A Typst label `<...>` is a definition, not a citation. An `@key`
+        // citation must still be recognised when it directly follows a label
+        // (`>` is a valid left boundary), and the bare label is not extracted.
+        let parser = TypstParser::new();
+        let content = "= Intro <sec:intro>\n\nsee <fig:a>@CMS:2022dwd here";
+        let citations = parser.extract_citations(content);
+        assert_eq!(citations, vec!["CMS:2022dwd"]);
+    }
+
+    #[test]
+    fn test_bare_label_is_not_treated_as_citation() {
+        // `<key>` on its own (outside `#cite(...)`) is a label definition and
+        // must NOT be collected as a citation key.
+        let parser = TypstParser::new();
+        let content = "#figure(image(\"a.png\")) <plot>";
+        let citations = parser.extract_citations(content);
+        assert!(citations.is_empty());
     }
 }
