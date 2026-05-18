@@ -3,6 +3,14 @@ use regex::Regex;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
+// TODO: consider migrating Typst citation extraction to the `typst-syntax`
+// crate (the official Typst parser). The regexes below cover the documented
+// forms (`@key`, `#cite(<key>)`) but can mis-handle `@` / `#cite` inside
+// comments, strings, or raw blocks, and cannot resolve `#cite(variable)`.
+// A real syntax tree would make extraction context-aware. Deferred for now;
+// revisit if real-world `.typ` files surface parsing problems the regexes
+// cannot handle. Trade-off: heavier, Typst-version-coupled dependency.
+
 // Matches `#cite(<key>)` with optional trailing arguments.
 static CITE_FN_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"#cite\(<([^>]+)>(?:,[^)]*)?\.?\)").unwrap());
