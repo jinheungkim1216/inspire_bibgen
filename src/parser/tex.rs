@@ -6,9 +6,8 @@ use std::sync::LazyLock;
 // Matches any `\...cite...` command — \cite, \citep, \citet, \autocite,
 // \parencite, \textcite, \nocite, \citeauthor, \citealp, … — with an optional
 // `*` and any number of optional `[...]` arguments.
-static CITATION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\\[A-Za-z]*cite[A-Za-z]*\*?(?:\[[^\]]*\])*\{([^}]+)\}").unwrap()
-});
+static CITATION_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\\[A-Za-z]*cite[A-Za-z]*\*?(?:\[[^\]]*\])*\{([^}]+)\}").unwrap());
 
 /// Strip TeX line comments: everything from an unescaped `%` to end of line.
 /// An escaped `\%` (odd number of preceding backslashes) is kept literally.

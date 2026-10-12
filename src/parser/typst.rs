@@ -20,8 +20,10 @@ static CITE_FN_REGEX: LazyLock<Regex> =
 // is excluded because every `.` must be followed by an alphanumeric character.
 // The leading boundary avoids matching `@` preceded by alphanumerics (emails).
 static AT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:^|[^a-zA-Z0-9])@([a-zA-Z0-9][a-zA-Z0-9:_\-]*(?:\.[a-zA-Z0-9][a-zA-Z0-9:_\-]*)*)")
-        .unwrap()
+    Regex::new(
+        r"(?:^|[^a-zA-Z0-9])@([a-zA-Z0-9][a-zA-Z0-9:_\-]*(?:\.[a-zA-Z0-9][a-zA-Z0-9:_\-]*)*)",
+    )
+    .unwrap()
 });
 
 pub struct TypstParser;

@@ -79,6 +79,14 @@ pub fn entry_key(entry: &str) -> Option<&str> {
     }
 }
 
+/// Citation keys of every entry in `content`, in order of appearance.
+pub fn texkeys(content: &str) -> Vec<String> {
+    split_bibtex_entries(content)
+        .iter()
+        .filter_map(|e| entry_key(e).map(str::to_string))
+        .collect()
+}
+
 /// Save BibTeX content to a file.
 ///
 /// In append mode, entries whose key already exists in the file are skipped;
@@ -222,5 +230,18 @@ mod tests {
         let path = dir.path().join("nested/sub/refs.bib");
         save_bibtex(&path, "@article{X,\n}", false).unwrap();
         assert!(path.exists());
+    }
+
+    #[test]
+    fn test_texkeys_lists_every_entry_key_in_order() {
+        let bib = "@article{Vaswani:2017lxm,\n  title = {A}\n}\n\n\
+                   @inproceedings{CMS:2022dwd,\n  title = {B}\n}";
+        assert_eq!(texkeys(bib), vec!["Vaswani:2017lxm", "CMS:2022dwd"]);
+    }
+
+    #[test]
+    fn test_texkeys_is_empty_when_there_are_no_entries() {
+        assert!(texkeys("").is_empty());
+        assert!(texkeys("just some text").is_empty());
     }
 }

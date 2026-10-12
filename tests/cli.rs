@@ -44,3 +44,25 @@ fn missing_tex_file_reports_file_not_found() {
         "expected a file-not-found error; stderr was:\n{stderr}"
     );
 }
+
+#[test]
+fn key_flag_conflicts_with_output_file() {
+    // `--key` prints texkeys to stdout; writing keys into a .bib makes no sense.
+    let output = run(&["1706.03762", "--key", "-o", "refs.bib"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--output") && stderr.contains("--key"),
+        "expected a clap conflict error naming both flags; stderr was:\n{stderr}"
+    );
+}
+
+#[test]
+fn key_flag_with_only_invalid_identifiers_fails_with_empty_stdout() {
+    let output = run(&["--key", "@@@bad"]);
+    assert!(!output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "nothing should be printed to stdout on failure"
+    );
+}

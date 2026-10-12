@@ -1,7 +1,7 @@
 use clap::Parser;
 use inspire_bibgen::api::{BibliographyGenerator, InspireClient};
 use inspire_bibgen::identifier::Identifier;
-use inspire_bibgen::output::save_bibtex;
+use inspire_bibgen::output::{save_bibtex, texkeys};
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -32,6 +32,11 @@ struct Args {
     /// Overwrite output file instead of appending
     #[arg(long)]
     overwrite: bool,
+
+    /// Print only the INSPIRE texkey(s), one per line, instead of BibTeX.
+    /// Handy for filling in \cite{...} while writing.
+    #[arg(long, conflicts_with = "output")]
+    key: bool,
 }
 
 fn main() {
@@ -115,6 +120,13 @@ fn run(args: Args) -> inspire_bibgen::Result<()> {
         results.join("\n\n")
     };
 
+    if args.key {
+        for key in texkeys(&bibtex) {
+            println!("{key}");
+        }
+        return Ok(());
+    }
+
     // Output: print to stdout or save to file
     match args.output {
         Some(output_path) => {
@@ -169,7 +181,10 @@ mod tests {
             ),
         ];
         let summary = format_missing_summary(&missing).expect("summary expected");
-        assert!(summary.contains("2 key"), "should state the count: {summary}");
+        assert!(
+            summary.contains("2 key"),
+            "should state the count: {summary}"
+        );
         assert!(summary.contains("9999.99999"));
         assert!(summary.contains("Paper not found"));
         assert!(summary.contains("badkey"));
